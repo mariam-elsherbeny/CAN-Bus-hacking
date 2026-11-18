@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-RAW = Path("data/raw")
+RAW = Path("data/car-hacking-dataset/Car-Hacking")
 OUT = Path("data/processed")
 FIG = Path("reports/figures")
 OUT.mkdir(parents=True, exist_ok=True)
