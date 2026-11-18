@@ -1,14 +1,23 @@
 # %% [markdown]
-# # 01 - Explore & clean the HCRL Car-Hacking dataset
-# Run cell by cell in VS Code (Run Cell above each `# %%`).
-# Needs: pip install pandas numpy matplotlib pyarrow
+# ## 0. Environment Setup & Configuration
 #
-# Expected layout:
-#   data/raw/        <- the dataset files (DoS, Fuzzy, gear, RPM, normal)
-#   data/processed/  <- cleaned parquet files (created here)
-#   reports/figures/ <- plots (created here)
+# This section prepares the environment and defines the paths,
+# dataset filenames, and constants used throughout the notebook.
+#
+# The HCRL Car-Hacking dataset contains four attack scenarios
+# (DoS, Fuzzy, Gear, RPM) and normal driving data.
+#
+# All datasets will be loaded, processed, and exported for
+# further exploration and model development.
 
 # %%
+import sys
+print(sys.executable)
+import subprocess, sys
+subprocess.check_call([sys.executable, "-m", "pip", "install", "pyarrow"])
+import pyarrow
+print(pyarrow.__version__)
+
 import re
 from pathlib import Path
 
@@ -37,12 +46,26 @@ HEX = {f"{i:02x}": i for i in range(256)} | {f"{i:02X}": i for i in range(256)}
 print("Files found in data/raw:", [p.name for p in RAW.iterdir()] if RAW.exists() else "FOLDER MISSING")
 
 # %% [markdown]
-# ## 1. Parsing
-# Quirk of the attack CSVs: they have no header, and rows with DLC < 8 have
-# fewer byte columns, so the flag (R/T) lands in the wrong column.
-# Row format: timestamp, can_id, dlc, byte0..byte(dlc-1), flag
-# We fix this by taking the LAST non-empty value of each row as the flag.
-
+# %% [markdown]
+# ## 1. Data Parsing
+#
+# The original dataset files have different formats:
+# - Attack datasets are stored as CSV files without headers.
+# - Normal driving data is stored in a TXT file.
+#
+# This section converts both formats into a consistent
+# Pandas DataFrame structure.
+#
+# Each CAN message contains:
+# - Timestamp
+# - CAN ID
+# - DLC (Data Length Code)
+# - Up to 8 data bytes
+# - Label (Normal / Attack)
+# - Attack type
+#
+# Special handling is required for attack CSVs because
+# messages with DLC < 8 shift the flag position.
 # %%
 def parse_chunk(chunk: pd.DataFrame, attack: str) -> pd.DataFrame:
     flag = chunk.iloc[:, 3:].ffill(axis=1).iloc[:, -1]
@@ -63,7 +86,14 @@ def parse_chunk(chunk: pd.DataFrame, attack: str) -> pd.DataFrame:
     out["label"] = (flag.str.strip() == "T").astype("int8")
     out["attack_type"] = attack
     return out
-
+# %% [markdown]
+# ### 1.1 Parsing Attack CSV Chunks
+#
+# Processes the attack CSV files in chunks to reduce memory usage.
+#
+# The function extracts the transmission flag, converts hexadecimal
+# CAN IDs and data bytes into numeric values, and assigns labels
+# according to the message flag.
 
 def load_csv(path: Path, attack: str) -> pd.DataFrame:
     parts = []
@@ -74,7 +104,12 @@ def load_csv(path: Path, attack: str) -> pd.DataFrame:
 
 LINE_RE = re.compile(r"Timestamp:\s*([\d.]+)\s+ID:\s*([0-9a-fA-F]+)\s+\d+\s+DLC:\s*(\d)\s*(.*)")
 
-
+# %% [markdown]
+# ### 1.3 Parsing Normal Driving Data
+# The normal dataset uses a different text-based format.
+# Regular expressions are used to extract CAN message fields.
+# The extracted messages are converted into the same structure
+# used for the attack datasets and assigned a normal label.
 def load_normal_txt(path: Path) -> pd.DataFrame:
     """normal_run_data.txt uses a different text format than the CSVs."""
     rows = []
@@ -102,10 +137,19 @@ def load(name: str) -> pd.DataFrame:
 
 
 # %% [markdown]
-# ## 2. Cleaning
-# - sort by timestamp
-# - drop exact duplicate rows (same timestamp + id + data)
-# - sanity checks, then save to parquet
+# ## 2. Data Cleaning & Preprocessing
+#
+# After parsing, the datasets undergo basic cleaning to ensure
+# consistency and improve data quality.
+#
+# The cleaning process includes:
+# - Sorting CAN messages chronologically.
+# - Removing duplicate messages based on timestamp, CAN ID,
+#   DLC, and data bytes.
+# - Converting attack_type into a categorical data type.
+#
+# The cleaned datasets are then exported in Parquet format
+# for efficient storage and future processing.
 
 # %%
 def clean(df: pd.DataFrame) -> pd.DataFrame:
@@ -129,8 +173,23 @@ for name, fname in FILES.items():
     print(f"   {len(df):,} rows saved -> {OUT / (name.lower() + '.parquet')}")
 
 # %% [markdown]
-# ## 3. Sanity checks (what to look at before trusting the data)
-
+# %% [markdown]
+# ## 3. Data Validation & Sanity Checks
+#
+# Before proceeding with exploratory analysis, we inspect
+# the cleaned datasets to verify their basic integrity.
+#
+# The checks include:
+# - Total number of messages.
+# - Recording duration.
+# - Number of unique CAN IDs.
+# - Missing values.
+# - Timestamp ordering.
+# - Normal vs. attack label distribution.
+# - Distribution of DLC values.
+#
+# These checks help identify potential data quality issues
+# before moving to deeper analysis.
 # %%
 for name, df in data.items():
     dur = df.timestamp.iloc[-1] - df.timestamp.iloc[0]
@@ -142,8 +201,24 @@ for name, df in data.items():
 
 # %% [markdown]
 # ## 4. Attack segments
-# The paper says ~300 injections of 3-5 s each per file. Check that we see that.
-
+# %% [markdown]
+# ## 4. Attack Segment Analysis
+#
+# Attack messages are not necessarily distributed continuously
+# throughout a recording. Instead, they may appear in distinct
+# periods of attack activity.
+#
+# This section identifies consecutive attack segments using
+# changes in the message labels.
+#
+# For each segment, we examine:
+# - Starting timestamp.
+# - Ending timestamp.
+# - Number of messages.
+# - Attack duration.
+#
+# The results help us understand the temporal distribution
+# of attack activity within each dataset.
 # %%
 def attack_segments(df: pd.DataFrame) -> pd.DataFrame:
     run_id = (df.label != df.label.shift()).cumsum()
@@ -228,9 +303,96 @@ plt.tight_layout()
 plt.savefig(FIG / "interarrival.png", dpi=150)
 plt.show()
 
+
+# %%
 # %% [markdown]
-# ## 6. Things to write down in your notes / README
-# - Which IDs dominate each attack (DoS: 0000 flood; Fuzzy: many random IDs; Gear/RPM: one real ID repeated).
-# - Gear/RPM spoofing is the hardest: the injected messages look like real ones, so *timing* features matter.
-# - Class imbalance per file (see plot 5a) -> use precision/recall/F1, not accuracy.
-# - Next step: feature engineering (inter-arrival per ID, rolling window counts) and a time-based train/test split.
+# ## 6. Recording Boundary Detection
+#
+# A dataset file may contain multiple recording periods
+# separated by large gaps in timestamps.
+#
+# A time gap threshold is used to distinguish separate
+# recording periods, and each message is assigned a recording ID.
+
+for name in ["DoS", "Fuzzy", "Gear", "RPM"]:
+    dt = data[name].timestamp.diff()
+    print(name, "largest gap (s):", round(dt.max(), 1), "at row", dt.idxmax())
+# %%
+GAP = 10  # seconds; anything bigger = a new recording
+
+# %% [markdown]
+# ### 6.1 Comparing Recording Tails
+#
+# The final recording period of each attack dataset is extracted
+# and compared against the corresponding DoS dataset tail.
+#
+# This checks whether the same normal driving sequence is
+# present across the different attack files.
+
+for name in ["DoS", "Fuzzy", "Gear", "RPM"]:
+    df = data[name]
+    df["recording"] = (df.timestamp.diff() > GAP).cumsum().astype("int8")
+    print(f"\n{name}")
+    print(df.groupby("recording").agg(
+        rows=("label", "size"),
+        attack_share=("label", "mean"),
+        start=("timestamp", "min"),
+        end=("timestamp", "max"),
+    ))
+# %%
+cols = ["timestamp", "can_id", "dlc", *BYTE_COLS]
+tails = {n: data[n][data[n].recording == 1].reset_index(drop=True)[cols]
+         for n in ["DoS", "Fuzzy", "Gear", "RPM"]}
+for n, t in tails.items():
+    print(n, "tail identical to DoS tail:", t.equals(tails["DoS"]))
+# %% # %% [markdown]
+# ### 6.2 Constructing Separate Normal and Attack Datasets
+#
+# Based on the recording analysis, the identified normal tail
+# is extracted from the DoS dataset and assigned the Normal label.
+# The resulting Parquet files provide a separated representation
+# of normal and attack traffic for subsequent experiments.
+
+normal_tail = data["DoS"][data["DoS"].recording == 1].drop(columns="recording").reset_index(drop=True)
+normal_tail["attack_type"] = "Normal"
+normal_tail.to_parquet(OUT / "normal_tail.parquet", index=False)
+
+for name in ["DoS", "Fuzzy", "Gear", "RPM"]:
+    rec0 = data[name][data[name].recording == 0].drop(columns="recording").reset_index(drop=True)
+    rec0.to_parquet(OUT / f"{name.lower()}_attack.parquet", index=False)
+    print(name, len(rec0), "rows")
+print("normal tail:", len(normal_tail), "rows")
+# 
+# %% [markdown]
+# ## 7. Attack Episode Analysis
+#
+# Attack segments identified through label transitions may
+# contain multiple consecutive periods of malicious activity.
+# This section applies a time-based approach to identify
+# attack episodes.
+#
+# A new episode is considered to begin when the time difference
+# between consecutive attack messages exceeds the specified
+# maximum gap.
+#
+# For each episode, we calculate:
+# - Starting timestamp.
+# - Ending timestamp.
+# - Number of attack messages.
+# - Episode duration.
+#
+# This provides another perspective on the temporal structure
+# and frequency of attack activity.
+
+def attack_episodes(df, max_gap=1.0):
+    t = df.loc[df.label == 1, "timestamp"]
+    ep = (t.diff() > max_gap).cumsum()          # new episode if >1 s since last attack msg
+    g = t.groupby(ep).agg(start="min", end="max", n_msgs="size")
+    g["duration_s"] = g.end - g.start
+    return g
+
+for name in ["DoS", "Fuzzy", "Gear", "RPM"]:
+    eps = attack_episodes(data[name][data[name].recording == 0])
+    print(f"{name}: {len(eps)} episodes | median {eps.duration_s.median():.1f}s "
+          f"(min {eps.duration_s.min():.1f}, max {eps.duration_s.max():.1f})")
+# 
