@@ -10,62 +10,13 @@
 # All datasets will be loaded, processed, and exported for
 # further exploration and model development.
 
-# %%
-import sys
-print(sys.executable)
-import subprocess, sys
-subprocess.check_call([sys.executable, "-m", "pip", "install", "pyarrow"])
-import pyarrow
-print(pyarrow.__version__)
-
-import re
-from pathlib import Path
-
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
-
-RAW = Path("data/car-hacking-dataset/Car-Hacking")
-OUT = Path("data/processed")
-FIG = Path("reports/figures")
-OUT.mkdir(parents=True, exist_ok=True)
-FIG.mkdir(parents=True, exist_ok=True)
-
-# name -> file name. EDIT these if your files are named differently.
-FILES = {
-    "DoS": "DoS_dataset.csv",
-    "Fuzzy": "Fuzzy_dataset.csv",
-    "Gear": "gear_dataset.csv",
-    "RPM": "RPM_dataset.csv",
-    "Normal": "normal_run_data.txt",
-}
-
-BYTE_COLS = [f"b{i}" for i in range(8)]
-HEX = {f"{i:02x}": i for i in range(256)} | {f"{i:02X}": i for i in range(256)}
+# %%# %%
+from common import *
 
 print("Files found in data/raw:", [p.name for p in RAW.iterdir()] if RAW.exists() else "FOLDER MISSING")
-
 # %% [markdown]
 # %% [markdown]
 # ## 1. Data Parsing
-#
-# The original dataset files have different formats:
-# - Attack datasets are stored as CSV files without headers.
-# - Normal driving data is stored in a TXT file.
-#
-# This section converts both formats into a consistent
-# Pandas DataFrame structure.
-#
-# Each CAN message contains:
-# - Timestamp
-# - CAN ID
-# - DLC (Data Length Code)
-# - Up to 8 data bytes
-# - Label (Normal / Attack)
-# - Attack type
-#
-# Special handling is required for attack CSVs because
-# messages with DLC < 8 shift the flag position.
 # %%
 def parse_chunk(chunk: pd.DataFrame, attack: str) -> pd.DataFrame:
     flag = chunk.iloc[:, 3:].ffill(axis=1).iloc[:, -1]
@@ -88,12 +39,6 @@ def parse_chunk(chunk: pd.DataFrame, attack: str) -> pd.DataFrame:
     return out
 # %% [markdown]
 # ### 1.1 Parsing Attack CSV Chunks
-#
-# Processes the attack CSV files in chunks to reduce memory usage.
-#
-# The function extracts the transmission flag, converts hexadecimal
-# CAN IDs and data bytes into numeric values, and assigns labels
-# according to the message flag.
 
 def load_csv(path: Path, attack: str) -> pd.DataFrame:
     parts = []
@@ -106,10 +51,6 @@ LINE_RE = re.compile(r"Timestamp:\s*([\d.]+)\s+ID:\s*([0-9a-fA-F]+)\s+\d+\s+DLC:
 
 # %% [markdown]
 # ### 1.3 Parsing Normal Driving Data
-# The normal dataset uses a different text-based format.
-# Regular expressions are used to extract CAN message fields.
-# The extracted messages are converted into the same structure
-# used for the attack datasets and assigned a normal label.
 def load_normal_txt(path: Path) -> pd.DataFrame:
     """normal_run_data.txt uses a different text format than the CSVs."""
     rows = []
@@ -138,18 +79,6 @@ def load(name: str) -> pd.DataFrame:
 
 # %% [markdown]
 # ## 2. Data Cleaning & Preprocessing
-#
-# After parsing, the datasets undergo basic cleaning to ensure
-# consistency and improve data quality.
-#
-# The cleaning process includes:
-# - Sorting CAN messages chronologically.
-# - Removing duplicate messages based on timestamp, CAN ID,
-#   DLC, and data bytes.
-# - Converting attack_type into a categorical data type.
-#
-# The cleaned datasets are then exported in Parquet format
-# for efficient storage and future processing.
 
 # %%
 def clean(df: pd.DataFrame) -> pd.DataFrame:
@@ -175,21 +104,6 @@ for name, fname in FILES.items():
 # %% [markdown]
 # %% [markdown]
 # ## 3. Data Validation & Sanity Checks
-#
-# Before proceeding with exploratory analysis, we inspect
-# the cleaned datasets to verify their basic integrity.
-#
-# The checks include:
-# - Total number of messages.
-# - Recording duration.
-# - Number of unique CAN IDs.
-# - Missing values.
-# - Timestamp ordering.
-# - Normal vs. attack label distribution.
-# - Distribution of DLC values.
-#
-# These checks help identify potential data quality issues
-# before moving to deeper analysis.
 # %%
 for name, df in data.items():
     dur = df.timestamp.iloc[-1] - df.timestamp.iloc[0]
@@ -203,22 +117,7 @@ for name, df in data.items():
 # ## 4. Attack segments
 # %% [markdown]
 # ## 4. Attack Segment Analysis
-#
-# Attack messages are not necessarily distributed continuously
-# throughout a recording. Instead, they may appear in distinct
-# periods of attack activity.
-#
-# This section identifies consecutive attack segments using
-# changes in the message labels.
-#
-# For each segment, we examine:
-# - Starting timestamp.
-# - Ending timestamp.
-# - Number of messages.
-# - Attack duration.
-#
-# The results help us understand the temporal distribution
-# of attack activity within each dataset.
+
 # %%
 def attack_segments(df: pd.DataFrame) -> pd.DataFrame:
     run_id = (df.label != df.label.shift()).cumsum()
@@ -307,12 +206,6 @@ plt.show()
 # %%
 # %% [markdown]
 # ## 6. Recording Boundary Detection
-#
-# A dataset file may contain multiple recording periods
-# separated by large gaps in timestamps.
-#
-# A time gap threshold is used to distinguish separate
-# recording periods, and each message is assigned a recording ID.
 
 for name in ["DoS", "Fuzzy", "Gear", "RPM"]:
     dt = data[name].timestamp.diff()
@@ -322,12 +215,6 @@ GAP = 10  # seconds; anything bigger = a new recording
 
 # %% [markdown]
 # ### 6.1 Comparing Recording Tails
-#
-# The final recording period of each attack dataset is extracted
-# and compared against the corresponding DoS dataset tail.
-#
-# This checks whether the same normal driving sequence is
-# present across the different attack files.
 
 for name in ["DoS", "Fuzzy", "Gear", "RPM"]:
     df = data[name]
@@ -347,11 +234,6 @@ for n, t in tails.items():
     print(n, "tail identical to DoS tail:", t.equals(tails["DoS"]))
 # %% # %% [markdown]
 # ### 6.2 Constructing Separate Normal and Attack Datasets
-#
-# Based on the recording analysis, the identified normal tail
-# is extracted from the DoS dataset and assigned the Normal label.
-# The resulting Parquet files provide a separated representation
-# of normal and attack traffic for subsequent experiments.
 
 normal_tail = data["DoS"][data["DoS"].recording == 1].drop(columns="recording").reset_index(drop=True)
 normal_tail["attack_type"] = "Normal"
